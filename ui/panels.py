@@ -10,11 +10,9 @@ from utils.cloner import (
     build_snapshot,
     run_copy,
 )
-from utils.layout import fmt_date, info_view, text_block
+from utils.layout import ACCENT, fmt_date, info_view, text_block
 
 log = logging.getLogger("panels")
-
-BLUE = discord.Colour.blue()
 
 
 class OwnedView(discord.ui.LayoutView):
@@ -128,7 +126,7 @@ class CopyPanel(OwnedView):
                 toggles,
                 all_row,
                 discord.ui.ActionRow(*buttons),
-                accent_colour=BLURPLE,
+                accent_colour=ACCENT,
             )
         )
 
@@ -277,7 +275,7 @@ class ClonesView(OwnedView):
                 discord.ui.Separator(),
                 discord.ui.ActionRow(select),
                 discord.ui.ActionRow(*buttons),
-                accent_colour=BLURPLE,
+                accent_colour=ACCENT,
             )
         )
 
@@ -311,5 +309,3 @@ async def show_clones(interaction: discord.Interaction, bot, user_id: int, sourc
         return
     view = ClonesView(bot, user_id, clones, source_guild)
     await interaction.response.edit_message(view=view)
-
-        
