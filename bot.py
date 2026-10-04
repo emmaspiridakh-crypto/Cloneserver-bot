@@ -14,7 +14,8 @@ log = logging.getLogger("clonebot")
 TOKEN = os.environ["TOKEN"]
 OWNER_ID = int(os.environ["OWNER_ID"])
 HOME_GUILD_ID = int(os.environ["HOME_GUILD_ID"])
-DB_PATH = os.getenv("DB_PATH", "clonebot.db")
+TURSO_URL = os.environ["TURSO_DATABASE_URL"]
+TURSO_TOKEN = os.environ["TURSO_AUTH_TOKEN"]
 
 EXTENSIONS = ("cogs.copy", "cogs.owners", "cogs.events")
 
@@ -26,7 +27,7 @@ class CloneBot(commands.Bot):
             intents=discord.Intents.default(),
             help_command=None,
         )
-        self.db = Database(DB_PATH)
+        self.db = Database(TURSO_URL, TURSO_TOKEN)
         self.owner_id = OWNER_ID
         self.home_guild_id = HOME_GUILD_ID
 
@@ -39,6 +40,10 @@ class CloneBot(commands.Bot):
             await self.load_extension(ext)
         await self.tree.sync()
         await self.tree.sync(guild=discord.Object(id=HOME_GUILD_ID))
+
+    async def close(self):
+        await self.db.close()
+        await super().close()
 
 
 bot = CloneBot()
