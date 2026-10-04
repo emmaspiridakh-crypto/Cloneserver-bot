@@ -2,6 +2,8 @@ import datetime
 
 import discord
 
+ACCENT = discord.Colour(0x1BAEF8)
+
 
 def fmt_date(ts: int) -> str:
     return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
@@ -20,5 +22,5 @@ def info_view(title: str, lines: list, color=None, items=None) -> discord.ui.Lay
     if items:
         children.append(discord.ui.Separator())
         children.extend(items)
-    view.add_item(discord.ui.Container(*children, accent_colour=color or discord.Colour.blurple()))
+    view.add_item(discord.ui.Container(*children, accent_colour=color or ACCENT))
     return view
