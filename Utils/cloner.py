@@ -4,6 +4,8 @@ import logging
 
 import discord
 
+from utils.layout import info_view
+
 log = logging.getLogger("cloner")
 
 REASON = "Server clone"
@@ -137,9 +139,9 @@ class InteractionReporter:
     def __init__(self, interaction: discord.Interaction):
         self.interaction = interaction
 
-    async def update(self, embed: discord.Embed):
+    async def update(self, view: discord.ui.LayoutView):
         try:
-            await self.interaction.edit_original_response(embed=embed, view=None)
+            await self.interaction.edit_original_response(view=view)
         except discord.HTTPException:
             pass
 
@@ -149,26 +151,22 @@ class DMReporter:
         self.user = user
         self.message: discord.Message | None = None
 
-    async def update(self, embed: discord.Embed):
+    async def update(self, view: discord.ui.LayoutView):
         try:
             if self.message is None:
-                self.message = await self.user.send(embed=embed)
+                self.message = await self.user.send(view=view)
             else:
-                await self.message.edit(embed=embed)
+                await self.message.edit(view=view)
         except discord.HTTPException:
             pass
 
 
 # ------------------------------------------------------------------- apply
-def _embed(title, steps, order, notes=None, color=None):
+def _view(title, steps, order, notes=None, color=None):
     lines = [f"> {LABELS[k]} | {steps[k]}" for k in order]
     if notes:
         lines += [""] + notes
-    return discord.Embed(
-        title=title,
-        description="\n".join(lines),
-        color=color or discord.Color.blurple(),
-    )
+    return info_view(title, lines, color)
 
 
 async def _make_channel(target: discord.Guild, ch: dict, category, ow: dict):
@@ -221,15 +219,15 @@ async def run_copy(snap: dict, selected: set, target: discord.Guild, reporter) -
     role_map = {snap["source"]["id"]: target.default_role}
 
     async def push(title="Copying", notes=None, color=None):
-        await reporter.update(_embed(title, steps, order, notes, color))
+        await reporter.update(_view(title, steps, order, notes, color))
 
     me = target.me
     if me is None or not me.guild_permissions.administrator:
         await reporter.update(
-            discord.Embed(
-                title="Copy failed",
-                description="> The bot needs the Administrator permission in the target server.",
-                color=discord.Color.red(),
+            info_view(
+                "Copy failed",
+                ["> The bot needs the Administrator permission in the target server."],
+                discord.Colour.red(),
             )
         )
         return False
@@ -417,5 +415,5 @@ async def run_copy(snap: dict, selected: set, target: discord.Guild, reporter) -
     if errors:
         notes += ["", f"- Problems | {len(errors)}"]
         notes += [f"- {e[:120]}" for e in errors[:8]]
-    await push("Copy finished", notes, discord.Color.green() if not errors else discord.Color.orange())
+    await push("Copy finished", notes, discord.Colour.green() if not errors else discord.Colour.orange())
     return True
