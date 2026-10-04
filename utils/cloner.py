@@ -1,8 +1,11 @@
 import asyncio
 import base64
 import logging
+import time
 
 import discord
+
+from utils.layout import info_view
 
 log = logging.getLogger("cloner")
 
@@ -131,44 +134,55 @@ async def build_snapshot(guild: discord.Guild) -> dict:
 
 
 # --------------------------------------------------------------- reporters
-class InteractionReporter:
-    """Edits the panel message. Only works for 15 minutes after the interaction."""
-
-    def __init__(self, interaction: discord.Interaction):
-        self.interaction = interaction
-
-    async def update(self, embed: discord.Embed):
-        try:
-            await self.interaction.edit_original_response(embed=embed, view=None)
-        except discord.HTTPException:
-            pass
-
-
 class DMReporter:
     def __init__(self, user: discord.abc.User):
         self.user = user
         self.message: discord.Message | None = None
 
-    async def update(self, embed: discord.Embed):
+    async def update(self, view: discord.ui.LayoutView):
         try:
             if self.message is None:
-                self.message = await self.user.send(embed=embed)
+                self.message = await self.user.send(view=view)
             else:
-                await self.message.edit(embed=embed)
-        except discord.HTTPException:
-            pass
+                await self.message.edit(view=view)
+        except discord.NotFound:
+            self.message = None
+        except Exception:
+            log.warning("Could not update the DM progress message", exc_info=True)
+
+
+class InteractionReporter:
+    """Edits the panel message. The interaction token dies after 15 minutes,
+    so when that happens the progress continues in the user's DMs."""
+
+    def __init__(self, interaction: discord.Interaction):
+        self.interaction = interaction
+        self.dm = DMReporter(interaction.user)
+        self.use_dm = False
+
+    async def update(self, view: discord.ui.LayoutView):
+        if not self.use_dm:
+            try:
+                await self.interaction.edit_original_response(view=view)
+                return
+            except discord.HTTPException as e:
+                if e.status in (401, 403, 404):
+                    self.use_dm = True
+                else:
+                    log.warning("Progress edit failed: %s", e)
+                    return
+            except Exception:
+                log.warning("Progress edit failed", exc_info=True)
+                return
+        await self.dm.update(view)
 
 
 # ------------------------------------------------------------------- apply
-def _embed(title, steps, order, notes=None, color=None):
+def _view(title, steps, order, notes=None, color=None):
     lines = [f"> {LABELS[k]} | {steps[k]}" for k in order]
     if notes:
         lines += [""] + notes
-    return discord.Embed(
-        title=title,
-        description="\n".join(lines),
-        color=color or discord.Color.blurple(),
-    )
+    return info_view(title, lines, color)
 
 
 async def _make_channel(target: discord.Guild, ch: dict, category, ow: dict):
@@ -213,23 +227,50 @@ async def _make_channel(target: discord.Guild, ch: dict, category, ow: dict):
     return None
 
 
+async def _delete_channel(ch) -> str:
+    """Returns 'ok', 'kept' (Community-required channel) or an error text."""
+    last = ""
+    for attempt in range(3):
+        try:
+            await ch.delete(reason=REASON)
+            return "ok"
+        except discord.NotFound:
+            return "ok"
+        except discord.HTTPException as e:
+            if e.code == 50074:  # required by Community, Discord does not allow deleting it
+                return "kept"
+            last = f"{e.status} {e.text or e}"
+            await asyncio.sleep(1 + attempt)
+    return last
+
+
 async def run_copy(snap: dict, selected: set, target: discord.Guild, reporter) -> bool:
     order = [k for k in OPTIONS if k in selected]
     steps = {k: "waiting" for k in order}
     errors: list[str] = []
     stats: dict[str, str] = {}
     role_map = {snap["source"]["id"]: target.default_role}
+    last_push = [0.0]
 
-    async def push(title="Copying", notes=None, color=None):
-        await reporter.update(_embed(title, steps, order, notes, color))
+    async def push(title="Copying", notes=None, color=None, force=True):
+        now = time.monotonic()
+        if not force and now - last_push[0] < 2.5:
+            return
+        last_push[0] = now
+        try:
+            await reporter.update(_view(title, steps, order, notes, color))
+        except Exception:
+            log.warning("Reporter failed", exc_info=True)
+
+    log.info("Copy into %s (%s) started, options: %s", target.id, target.name, sorted(selected))
 
     me = target.me
     if me is None or not me.guild_permissions.administrator:
         await reporter.update(
-            discord.Embed(
-                title="Copy failed",
-                description="> The bot needs the Administrator permission in the target server.",
-                color=discord.Color.red(),
+            info_view(
+                "Copy failed",
+                ["> The bot needs the Administrator permission in the target server."],
+                discord.Colour.red(),
             )
         )
         return False
@@ -272,6 +313,7 @@ async def run_copy(snap: dict, selected: set, target: discord.Guild, reporter) -
             await asyncio.sleep(0.3)
 
         created = 0
+        total = sum(1 for r in snap["roles"] if not r["default"])
         for r in snap["roles"]:
             if r["default"]:
                 try:
@@ -295,44 +337,37 @@ async def run_copy(snap: dict, selected: set, target: discord.Guild, reporter) -
                 created += 1
             except discord.HTTPException as e:
                 errors.append(f"Role {r['name']} | {e.text or e}")
+            steps["roles"] = f"creating {created}/{total}"
+            await push(force=False)
             await asyncio.sleep(0.5)
-        stats["roles"] = f"{created} created"
+        stats["roles"] = f"{created}/{total} created"
 
-    # ---- emojis
-    async def do_emojis():
-        limit = target.emoji_limit
-        static = sum(1 for e in target.emojis if not e.animated)
-        animated = sum(1 for e in target.emojis if e.animated)
-        created = skipped = 0
-        for e in snap["emojis"]:
-            if e["animated"]:
-                if animated >= limit:
-                    skipped += 1
-                    continue
-            elif static >= limit:
-                skipped += 1
-                continue
-            try:
-                await target.create_custom_emoji(name=e["name"], image=_unb64(e["image"]), reason=REASON)
-                created += 1
-                if e["animated"]:
-                    animated += 1
-                else:
-                    static += 1
-            except discord.HTTPException as ex:
-                errors.append(f"Emoji {e['name']} | {ex.text or ex}")
-            await asyncio.sleep(1.0)
-        stats["emojis"] = f"{created} created, {skipped} skipped (limit {limit})"
-
-    # ---- channels
+    # ---- channels: delete everything that exists, then build the new ones
     async def do_channels():
-        for ch in list(target.channels):
-            try:
-                await ch.delete(reason=REASON)
-            except discord.HTTPException:
-                pass
+        # 1) delete
+        existing = list(target.channels)
+        # channels first, categories last, so nothing is left orphaned
+        existing.sort(key=lambda c: isinstance(c, discord.CategoryChannel))
+        deleted = kept = 0
+        failed: list[str] = []
+        for i, ch in enumerate(existing, 1):
+            steps["channels"] = f"deleting {i}/{len(existing)}"
+            await push(force=False)
+            result = await _delete_channel(ch)
+            if result == "ok":
+                deleted += 1
+            elif result == "kept":
+                kept += 1
+            else:
+                failed.append(f"{ch.name} | {result}")
             await asyncio.sleep(0.3)
+        log.info("Channels deleted: %s, kept: %s, failed: %s", deleted, kept, len(failed))
+        for f in failed[:5]:
+            errors.append(f"Delete channel {f}")
+        if len(failed) > 5:
+            errors.append(f"Delete channel | and {len(failed) - 5} more failed")
 
+        # 2) create
         def build_ow(items):
             out = {}
             for it in items:
@@ -344,6 +379,8 @@ async def run_copy(snap: dict, selected: set, target: discord.Guild, reporter) -
                 )
             return out
 
+        total = len(snap["categories"]) + len(snap["channels"])
+        done = 0
         cat_map = {}
         for c in snap["categories"]:
             try:
@@ -351,7 +388,11 @@ async def run_copy(snap: dict, selected: set, target: discord.Guild, reporter) -
                     name=c["name"], overwrites=build_ow(c["overwrites"]), reason=REASON
                 )
             except discord.HTTPException as e:
-                errors.append(f"Category {c['name']} | {e.text or e}")
+                errors.append(f"Category {c['name']} | {e.status} {e.text or e}")
+                log.warning("Category %s failed: %s", c["name"], e)
+            done += 1
+            steps["channels"] = f"creating {done}/{total}"
+            await push(force=False)
             await asyncio.sleep(0.4)
 
         groups: dict = {}
@@ -366,6 +407,8 @@ async def run_copy(snap: dict, selected: set, target: discord.Guild, reporter) -
                 key=lambda c: (c["kind"] in ("voice", "stage"), c["position"]),
             )
             category = cat_map.get(cid) if cid is not None else None
+            if cid is not None and category is None and items:
+                errors.append(f"Channels of a missing category are created without category")
             for ch in items:
                 try:
                     new = await _make_channel(target, ch, category, build_ow(ch["overwrites"]))
@@ -373,7 +416,14 @@ async def run_copy(snap: dict, selected: set, target: discord.Guild, reporter) -
                         chan_map[ch["id"]] = new
                         created += 1
                 except discord.HTTPException as e:
-                    errors.append(f"Channel {ch['name']} | {e.text or e}")
+                    errors.append(f"Channel {ch['name']} | {e.status} {e.text or e}")
+                    log.warning("Channel %s failed: %s", ch["name"], e)
+                except Exception as e:
+                    errors.append(f"Channel {ch['name']} | {e}")
+                    log.exception("Channel %s failed", ch["name"])
+                done += 1
+                steps["channels"] = f"creating {done}/{total}"
+                await push(force=False)
                 await asyncio.sleep(0.4)
 
         if "settings" in selected:
@@ -389,14 +439,61 @@ async def run_copy(snap: dict, selected: set, target: discord.Guild, reporter) -
             except discord.HTTPException as e:
                 errors.append(f"AFK / system channel | {e.text or e}")
 
-        stats["channels"] = f"{len(cat_map)} categories, {created} channels"
+        parts = [f"{deleted} deleted"]
+        if kept:
+            parts.append(f"{kept} kept (required by Community)")
+        parts.append(f"{len(cat_map)}/{len(snap['categories'])} categories")
+        parts.append(f"{created}/{len(snap['channels'])} channels")
+        stats["channels"] = ", ".join(parts)
+        log.info("Channels step: %s", stats["channels"])
+
+    # ---- emojis (slowest step and heavily rate limited, so it runs last)
+    async def do_emojis():
+        limit = target.emoji_limit
+        static = sum(1 for e in target.emojis if not e.animated)
+        animated = sum(1 for e in target.emojis if e.animated)
+        created = skipped = 0
+        total = len(snap["emojis"])
+        stopped = False
+        for i, e in enumerate(snap["emojis"], 1):
+            if e["animated"]:
+                if animated >= limit:
+                    skipped += 1
+                    continue
+            elif static >= limit:
+                skipped += 1
+                continue
+            steps["emojis"] = f"uploading {i}/{total}"
+            await push(force=False)
+            try:
+                await asyncio.wait_for(
+                    target.create_custom_emoji(name=e["name"], image=_unb64(e["image"]), reason=REASON),
+                    timeout=60,
+                )
+                created += 1
+                if e["animated"]:
+                    animated += 1
+                else:
+                    static += 1
+            except asyncio.TimeoutError:
+                # Discord is rate limiting emoji uploads; stop instead of waiting for minutes
+                stopped = True
+                errors.append("Emoji | Discord rate limit, upload stopped. Try the rest later.")
+                break
+            except discord.HTTPException as ex:
+                errors.append(f"Emoji {e['name']} | {ex.text or ex}")
+            await asyncio.sleep(1.0)
+        msg = f"{created} created, {skipped} skipped (limit {limit})"
+        if stopped:
+            msg += ", stopped by rate limit"
+        stats["emojis"] = msg
 
     runners = [
         ("settings", do_settings),
         ("icon", do_icon),
         ("roles", do_roles),
-        ("emojis", do_emojis),
         ("channels", do_channels),
+        ("emojis", do_emojis),
     ]
 
     for key, fn in runners:
@@ -417,5 +514,6 @@ async def run_copy(snap: dict, selected: set, target: discord.Guild, reporter) -
     if errors:
         notes += ["", f"- Problems | {len(errors)}"]
         notes += [f"- {e[:120]}" for e in errors[:8]]
-    await push("Copy finished", notes, discord.Color.green() if not errors else discord.Color.orange())
+    await push("Copy finished", notes, discord.Colour.green() if not errors else discord.Colour.orange())
+    log.info("Copy into %s finished with %s problem(s)", target.id, len(errors))
     return True
