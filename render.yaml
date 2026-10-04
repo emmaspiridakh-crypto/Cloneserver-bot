@@ -2,7 +2,7 @@ services:
   - type: web
     name: clonebot
     runtime: docker
-    plan: starter
+    plan: free
     envVars:
       - key: PORT
         value: "1000"
@@ -12,9 +12,7 @@ services:
         sync: false
       - key: HOME_GUILD_ID
         sync: false
-      - key: DB_PATH
-        value: /data/clonebot.db
-    disk:
-      name: clonebot-data
-      mountPath: /data
-      sizeGB: 1
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
