@@ -17,7 +17,7 @@ HOME_GUILD_ID = int(os.environ["HOME_GUILD_ID"])
 TURSO_URL = os.environ["TURSO_DATABASE_URL"]
 TURSO_TOKEN = os.environ["TURSO_AUTH_TOKEN"]
 
-EXTENSIONS = ("cogs.copy", "cogs.owners", "cogs.events")
+EXTENSIONS = ("cogs.copy", "cogs.owner", "cogs.events")
 
 
 class CloneBot(commands.Bot):
