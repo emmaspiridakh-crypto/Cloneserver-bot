@@ -10,12 +10,14 @@ from utils.cloner import (
     build_snapshot,
     run_copy,
 )
-from utils.embeds import fmt_date, info_embed
+from utils.layout import fmt_date, info_view, text_block
 
 log = logging.getLogger("panels")
 
+BLURPLE = discord.Colour.blurple()
 
-class OwnedView(discord.ui.View):
+
+class OwnedView(discord.ui.LayoutView):
     def __init__(self, user_id: int, timeout: float = 900):
         super().__init__(timeout=timeout)
         self.user_id = user_id
@@ -28,8 +30,8 @@ class OwnedView(discord.ui.View):
 
 
 class ActionButton(discord.ui.Button):
-    def __init__(self, label, style, row, handler):
-        super().__init__(label=label, style=style, row=row)
+    def __init__(self, label, style, handler):
+        super().__init__(label=label, style=style)
         self.handler = handler
 
     async def callback(self, interaction: discord.Interaction):
@@ -42,7 +44,6 @@ class ToggleButton(discord.ui.Button):
         super().__init__(
             label=f"{LABELS[key]} | {'ON' if on else 'OFF'}",
             style=discord.ButtonStyle.success if on else discord.ButtonStyle.secondary,
-            row=0,
         )
         self.panel = panel
         self.key = key
@@ -82,21 +83,7 @@ class CopyPanel(OwnedView):
         self.build()
 
     # ---- layout
-    def build(self):
-        self.clear_items()
-        for key in OPTIONS:
-            self.add_item(ToggleButton(self, key))
-        self.add_item(ActionButton("Copy All", discord.ButtonStyle.secondary, 1, self.on_copy_all))
-        self.add_item(ActionButton("Copy Server", discord.ButtonStyle.secondary, 2, self.on_copy_server))
-        self.add_item(ActionButton("Cancel", discord.ButtonStyle.danger, 2, self.on_cancel))
-        if self.clone:
-            self.add_item(ActionButton("Back", discord.ButtonStyle.secondary, 2, self.on_back))
-            self.add_item(ActionButton("Delete Clone", discord.ButtonStyle.danger, 2, self.on_delete))
-        else:
-            self.add_item(ActionButton("Make a Clone", discord.ButtonStyle.primary, 2, self.on_make_clone))
-            self.add_item(ActionButton("My Clones", discord.ButtonStyle.secondary, 2, self.on_my_clones))
-
-    def embed(self) -> discord.Embed:
+    def text(self) -> str:
         if self.clone:
             head = [
                 f"> Saved clone | {self.clone['guild_name']}",
@@ -113,11 +100,41 @@ class CopyPanel(OwnedView):
         ]
         if not self.clone:
             body.append("- Make a Clone saves the whole server inside the bot, to load later.")
-        return info_embed("Copy Server", head + body)
+        return text_block("Copy Server", head + body)
+
+    def build(self):
+        self.clear_items()
+
+        toggles = discord.ui.ActionRow(*[ToggleButton(self, k) for k in OPTIONS])
+        all_row = discord.ui.ActionRow(
+            ActionButton("Copy All", discord.ButtonStyle.primary, self.on_copy_all)
+        )
+
+        buttons = [
+            ActionButton("Copy Server", discord.ButtonStyle.success, self.on_copy_server),
+            ActionButton("Cancel", discord.ButtonStyle.danger, self.on_cancel),
+        ]
+        if self.clone:
+            buttons.append(ActionButton("Back", discord.ButtonStyle.secondary, self.on_back))
+            buttons.append(ActionButton("Delete Clone", discord.ButtonStyle.danger, self.on_delete))
+        else:
+            buttons.append(ActionButton("Make a Clone", discord.ButtonStyle.primary, self.on_make_clone))
+            buttons.append(ActionButton("My Clones", discord.ButtonStyle.secondary, self.on_my_clones))
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(self.text()),
+                discord.ui.Separator(),
+                toggles,
+                all_row,
+                discord.ui.ActionRow(*buttons),
+                accent_colour=BLURPLE,
+            )
+        )
 
     async def refresh(self, interaction: discord.Interaction):
         self.build()
-        await interaction.response.edit_message(embed=self.embed(), view=self)
+        await interaction.response.edit_message(view=self)
 
     # ---- handlers
     async def on_copy_all(self, interaction: discord.Interaction):
@@ -129,7 +146,7 @@ class CopyPanel(OwnedView):
 
     async def on_cancel(self, interaction: discord.Interaction):
         self.stop()
-        await interaction.response.edit_message(embed=info_embed("Copy Server", ["> Cancelled."]), view=None)
+        await interaction.response.edit_message(view=info_view("Copy Server", ["> Cancelled."]))
 
     async def on_make_clone(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -179,9 +196,7 @@ class CopyPanel(OwnedView):
                 )
                 return
 
-        await interaction.response.edit_message(
-            embed=info_embed("Copy Server", ["> Preparing the copy"]), view=None
-        )
+        await interaction.response.edit_message(view=info_view("Copy Server", ["> Preparing the copy"]))
         self.stop()
 
         try:
@@ -189,7 +204,7 @@ class CopyPanel(OwnedView):
         except Exception:
             log.exception("Snapshot failed")
             await interaction.edit_original_response(
-                embed=info_embed("Copy failed", ["> Could not read the source server."], discord.Color.red())
+                view=info_view("Copy failed", ["> Could not read the source server."], discord.Colour.red())
             )
             return
 
@@ -207,10 +222,9 @@ class CopyPanel(OwnedView):
             guild=discord.Object(id=target_id),
             disable_guild_select=True,
         )
-        link_view = discord.ui.View()
-        link_view.add_item(discord.ui.Button(label="Add Bot", url=url))
+        link_row = discord.ui.ActionRow(discord.ui.Button(label="Add Bot", url=url))
         await interaction.edit_original_response(
-            embed=info_embed(
+            view=info_view(
                 "Copy Server",
                 [
                     "> The bot is not in the target server yet.",
@@ -221,8 +235,8 @@ class CopyPanel(OwnedView):
                     "- The bot leaves the server when it is finished.",
                     "- The link is valid for 60 minutes.",
                 ],
-            ),
-            view=link_view,
+                items=[link_row],
+            )
         )
 
 
@@ -233,6 +247,10 @@ class ClonesView(OwnedView):
         self.bot = bot
         self.clones = clones
         self.source_guild = source_guild
+        self.build()
+
+    def build(self):
+        self.clear_items()
 
         options = [
             discord.SelectOption(
@@ -240,19 +258,28 @@ class ClonesView(OwnedView):
                 value=str(c["id"]),
                 description=f"Saved {fmt_date(c['created_at'])}",
             )
-            for c in clones[:25]
+            for c in self.clones[:25]
         ]
-        select = discord.ui.Select(placeholder="Select a clone", options=options, row=0)
+        select = discord.ui.Select(placeholder="Select a clone", options=options)
         select.callback = self.on_select
-        self.add_item(select)
-        if source_guild is not None:
-            self.add_item(ActionButton("Back", discord.ButtonStyle.secondary, 1, self.on_back))
-        self.add_item(ActionButton("Cancel", discord.ButtonStyle.danger, 1, self.on_cancel))
 
-    def embed(self) -> discord.Embed:
+        buttons = []
+        if self.source_guild is not None:
+            buttons.append(ActionButton("Back", discord.ButtonStyle.secondary, self.on_back))
+        buttons.append(ActionButton("Cancel", discord.ButtonStyle.danger, self.on_cancel))
+
         lines = [f"> {c['guild_name']} | {fmt_date(c['created_at'])}" for c in self.clones]
         lines += ["", "- Select a clone to load it into a server."]
-        return info_embed("My Clones", lines)
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(text_block("My Clones", lines)),
+                discord.ui.Separator(),
+                discord.ui.ActionRow(select),
+                discord.ui.ActionRow(*buttons),
+                accent_colour=BLURPLE,
+            )
+        )
 
     async def on_select(self, interaction: discord.Interaction):
         clone_id = int(interaction.data["values"][0])
@@ -261,15 +288,15 @@ class ClonesView(OwnedView):
             await interaction.response.send_message("> That clone no longer exists.", ephemeral=True)
             return
         panel = CopyPanel(self.bot, self.user_id, source_guild=self.source_guild, clone=clone)
-        await interaction.response.edit_message(embed=panel.embed(), view=panel)
+        await interaction.response.edit_message(view=panel)
 
     async def on_back(self, interaction: discord.Interaction):
         panel = CopyPanel(self.bot, self.user_id, source_guild=self.source_guild)
-        await interaction.response.edit_message(embed=panel.embed(), view=panel)
+        await interaction.response.edit_message(view=panel)
 
     async def on_cancel(self, interaction: discord.Interaction):
         self.stop()
-        await interaction.response.edit_message(embed=info_embed("My Clones", ["> Closed."]), view=None)
+        await interaction.response.edit_message(view=info_view("My Clones", ["> Closed."]))
 
 
 async def show_clones(interaction: discord.Interaction, bot, user_id: int, source_guild):
@@ -277,12 +304,12 @@ async def show_clones(interaction: discord.Interaction, bot, user_id: int, sourc
     if not clones:
         if source_guild is not None:
             panel = CopyPanel(bot, user_id, source_guild=source_guild)
-            await interaction.response.edit_message(embed=panel.embed(), view=panel)
+            await interaction.response.edit_message(view=panel)
             await interaction.followup.send("> You have no saved clones.", ephemeral=True)
         else:
-            await interaction.response.edit_message(
-                embed=info_embed("My Clones", ["> You have no saved clones."]), view=None
-            )
+            await interaction.response.edit_message(view=info_view("My Clones", ["> You have no saved clones."]))
         return
     view = ClonesView(bot, user_id, clones, source_guild)
-    await interaction.response.edit_message(embed=view.embed(), view=view)
+    await interaction.response.edit_message(view=view)
+
+        
