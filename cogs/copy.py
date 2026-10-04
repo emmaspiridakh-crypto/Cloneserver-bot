@@ -16,7 +16,7 @@ class CopyCog(commands.Cog):
     @app_commands.check(owner_check)
     async def server(self, interaction: discord.Interaction):
         panel = CopyPanel(self.bot, interaction.user.id, source_guild=interaction.guild)
-        await interaction.response.send_message(embed=panel.embed(), view=panel, ephemeral=True)
+        await interaction.response.send_message(view=panel, ephemeral=True)
 
 
 async def setup(bot):
