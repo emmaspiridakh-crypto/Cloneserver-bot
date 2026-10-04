@@ -14,7 +14,7 @@ from utils.layout import fmt_date, info_view, text_block
 
 log = logging.getLogger("panels")
 
-BLURPLE = discord.Colour.blurple()
+BLUE = discord.Colour.blue()
 
 
 class OwnedView(discord.ui.LayoutView):
