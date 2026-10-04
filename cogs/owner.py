@@ -36,5 +36,6 @@ class OwnersCog(commands.Cog):
         )
 
 
-async def setup(bot)
+async def setup(bot):
+    # registered only in the home server
     await bot.add_cog(OwnersCog(bot), guild=discord.Object(id=bot.home_guild_id))
